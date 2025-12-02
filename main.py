@@ -4,24 +4,27 @@ import streamlit as st
 # Configurações iniciais
 st.set_page_config(page_title="Processador de Arquivos", layout="wide")
 
-# Função para carregar arquivos
+# Função para carregar arquivos com detecção automática de delimitador
 @st.cache_data
 def carregar_arquivos(arquivos):
     lista = []
-    
+
     for arquivo in arquivos:
         try:
-            base = pd.read_csv(arquivo, sep=',', low_memory=False, encoding='utf-8')
-        except pd.errors.ParserError:
-            try:
-                base = pd.read_csv(arquivo, sep=';', low_memory=False, encoding='utf-8')
-            except Exception as e:
-                print(f"Erro ao carregar {arquivo}: {e}")
-                return None
-        
+            base = pd.read_csv(
+                arquivo,
+                sep=None,              # Detecta delimitador automaticamente
+                engine="python",       # Obrigatório para sep=None
+                low_memory=False,
+                encoding="utf-8"
+            )
+        except Exception as e:
+            print(f"Erro ao carregar {arquivo}: {e}")
+            return None
+
         print(f"Arquivo carregado: {arquivo}, Linhas: {len(base)}, Colunas: {len(base.columns)}")
         lista.append(base)
-    
+
     if lista:
         base_final = pd.concat(lista, ignore_index=True, join='outer')
         print(f"DataFrame final criado com {len(base_final)} linhas e {len(base_final.columns)} colunas.")
@@ -57,29 +60,29 @@ def gerar_arquivos_filtrados(base, tipo_planilha):
     if colunas_iguais:
         negativos = base[base['MG_Emprestimo_Disponivel'] < 0]
         cpfs_classificados.update(negativos['CPF'].tolist())
-        
+
         menores_50 = base[
-            (base['MG_Emprestimo_Disponivel'] < 50) & 
+            (base['MG_Emprestimo_Disponivel'] < 50) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
         cpfs_classificados.update(menores_50['CPF'].tolist())
-        
+
         menores_300 = base[
-            (base['MG_Emprestimo_Disponivel'] < 300) & 
-            (base['MG_Emprestimo_Disponivel'] >= 50) & 
+            (base['MG_Emprestimo_Disponivel'] < 300) &
+            (base['MG_Emprestimo_Disponivel'] >= 50) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
         cpfs_classificados.update(menores_300['CPF'].tolist())
-        
+
         menores_500 = base[
-            (base['MG_Emprestimo_Disponivel'] < 500) & 
-            (base['MG_Emprestimo_Disponivel'] >= 300) & 
+            (base['MG_Emprestimo_Disponivel'] < 500) &
+            (base['MG_Emprestimo_Disponivel'] >= 300) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
         cpfs_classificados.update(menores_500['CPF'].tolist())
-        
+
         restante = base[
-            (base['MG_Emprestimo_Disponivel'] >= 500) & 
+            (base['MG_Emprestimo_Disponivel'] >= 500) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
 
@@ -91,20 +94,20 @@ def gerar_arquivos_filtrados(base, tipo_planilha):
         cpfs_classificados.update(negativos['CPF'].tolist())
 
         menores_50 = base[
-            (base['MG_Emprestimo_Disponivel'] < 50) & 
+            (base['MG_Emprestimo_Disponivel'] < 50) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
         cpfs_classificados.update(menores_50['CPF'].tolist())
 
         super_tomador = base[
-            (base['MG_Emprestimo_Disponivel'] / base['MG_Emprestimo_Total'] < 0.35) & 
-            (base['MG_Emprestimo_Disponivel'] >= 50) & 
+            (base['MG_Emprestimo_Disponivel'] / base['MG_Emprestimo_Total'] < 0.35) &
+            (base['MG_Emprestimo_Disponivel'] >= 50) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
         cpfs_classificados.update(super_tomador['CPF'].tolist())
-        
+
         tomador = base[
-            (base['MG_Emprestimo_Disponivel'] != base['MG_Emprestimo_Total']) & 
+            (base['MG_Emprestimo_Disponivel'] != base['MG_Emprestimo_Total']) &
             ~base['CPF'].isin(cpfs_classificados)
         ]
 
@@ -115,7 +118,6 @@ def gerar_arquivos_filtrados(base, tipo_planilha):
         menores_300 = None
         menores_500 = None
 
-    # Ajustar colunas conforme o tipo da planilha
     arquivos = {
         "negativos": negativos,
         "menores_50": menores_50,
@@ -136,7 +138,7 @@ def gerar_arquivos_filtrados(base, tipo_planilha):
                 arquivos[key]['senha'] = ''
                 arquivos[key]['nome'] = ''
                 arquivos[key] = arquivos[key][['cpf', 'senha', 'matricula', 'nome']]
-    
+
     return arquivos
 
 
@@ -151,7 +153,7 @@ tipo_planilha = st.sidebar.radio("Selecione o tipo de planilha que deseja retorn
 
 if arquivos:
     base = carregar_arquivos(arquivos)
-    
+
     st.write("### Pré-visualização dos dados carregados")
     st.dataframe(base.head())
     st.write(base.shape)
