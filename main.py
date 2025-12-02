@@ -1,192 +1,222 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
+
+st.set_page_config(page_title="Orquestrador CSV - Filtrar Lotações e Gerar Grupos", layout="wide")
 
 
-# -------------------------------------
-# Detectar encoding sem chardet
-# -------------------------------------
-def detectar_encoding_sem_chardet(arquivo):
-    for enc in ["utf-8", "latin-1", "iso-8859-1"]:
+# -------------------------
+# Utils: detectar encoding
+# -------------------------
+def detectar_encoding_sem_chardet(uploaded_file):
+    # tenta decodificar o começo do arquivo com encodings comuns
+    encs = ["utf-8", "latin-1", "iso-8859-1", "cp1252"]
+    raw = uploaded_file.read(4096)  # lê um pedaço
+    for enc in encs:
         try:
-            arquivo.seek(0)
-            arquivo.read().decode(enc)
+            raw.decode(enc)
+            uploaded_file.seek(0)
             return enc
-        except:
-            pass
+        except Exception:
+            continue
+    uploaded_file.seek(0)
     return "latin-1"
 
 
-# -------------------------------------
-# Detectar separador automaticamente
-# -------------------------------------
-def detectar_separador(arquivo, encoding):
-    arquivo.seek(0)
+# -------------------------
+# Utils: detectar separador
+# -------------------------
+def detectar_separador(uploaded_file, encoding):
+    uploaded_file.seek(0)
     try:
-        linhas = arquivo.read().decode(encoding).split("\n")[:5]
-    except:
+        sample = uploaded_file.read(8192).decode(encoding, errors="replace")
+    except Exception:
+        uploaded_file.seek(0)
         return ","
+    uploaded_file.seek(0)
 
-    arquivo.seek(0)
-    amostra = "\n".join(linhas)
-
-    delimitadores = [",", ";", "|", "\t"]
-    contagem = {d: amostra.count(d) for d in delimitadores}
-
-    return max(contagem, key=contagem.get)
+    candidates = [",", ";", "|", "\t"]
+    counts = {c: sample.count(c) for c in candidates}
+    # se todos zero, fallback ","
+    best = max(counts, key=counts.get)
+    return best if counts[best] > 0 else ","
 
 
-# -------------------------------------
-# Carregar e filtrar por Lotação
-# -------------------------------------
+# -------------------------
+# Carregar vários arquivos (detecta encoding/separador) e filtra Lotacao
+# -------------------------
 @st.cache_data
-def carregar_e_filtrar(arquivos, lotacoes):
-    lista = []
-
-    for arquivo in arquivos:
-        nome = arquivo.name
-
-        encoding = detectar_encoding_sem_chardet(arquivo)
-        separador = detectar_separador(arquivo, encoding)
-
+def carregar_e_filtrar(arquivos, lotacoes_selecionadas):
+    dfs = []
+    for up in arquivos:
+        nome = up.name
         try:
-            arquivo.seek(0)
-            df = pd.read_csv(
-                arquivo,
-                sep=separador,
-                encoding=encoding,
-                engine="python"
-            )
+            enc = detectar_encoding_sem_chardet(up)
+            sep = detectar_separador(up, enc)
+            up.seek(0)
+            df = pd.read_csv(up, sep=sep, encoding=enc, engine="python")
         except Exception as e:
-            st.error(f"Erro ao ler {nome}: {e}")
+            # registra erro, mas continua com os outros arquivos
+            st.warning(f"Falha ao ler '{nome}': {e}")
             continue
 
-        # Garantir que tem Lotacao
+        # verificar colunas obrigatórias
         if "Lotacao" not in df.columns:
-            st.error(f"O arquivo {nome} não possui a coluna 'Lotacao'.")
+            st.warning(f"O arquivo '{nome}' não contém a coluna 'Lotacao'. Será ignorado.")
             continue
 
-        # Garantir colunas de margem
-        if "MG_Emprestimo_Disponivel" not in df.columns:
-            st.error(f"O arquivo {nome} não possui MG_Emprestimo_Disponivel.")
-            continue
+        # filtrar por lotação
+        df = df[df["Lotacao"].isin(lotacoes_selecionadas)]
 
-        if "MG_Emprestimo_Total" not in df.columns:
-            st.error(f"O arquivo {nome} não possui MG_Emprestimo_Total.")
-            continue
+        # algumas vezes colunas podem vir com espaços, normaliza nomes comuns
+        dfs.append(df)
 
-        # Filtrar as lotações desejadas
-        df = df[df["Lotacao"].isin(lotacoes)]
-
-        lista.append(df)
-
-    if not lista:
+    if not dfs:
         return pd.DataFrame()
-
-    return pd.concat(lista, ignore_index=True)
-
-
-# -------------------------------------
-# Função para dividir em partes de 50k
-# -------------------------------------
-def dividir_em_partes(df, limite=50000):
-    partes = []
-    total = len(df)
-
-    if total == 0:
-        return partes
-
-    num_partes = (total // limite) + (1 if total % limite > 0 else 0)
-
-    for i in range(num_partes):
-        inicio = i * limite
-        fim = inicio + limite
-        partes.append(df.iloc[inicio:fim])
-
-    return partes
+    # concatena tudo
+    return pd.concat(dfs, ignore_index=True, sort=False)
 
 
-# -------------------------------------
-# Criar os 5 grupos e gerar arquivos
-# -------------------------------------
-def gerar_grupos(df):
+# -------------------------
+# Função para criar grupos (sem sobreposição)
+# -------------------------
+def criar_grupos_sem_sobreposicao(df):
+    # garantir colunas numéricas
+    df = df.copy()
     df["MG_Emprestimo_Disponivel"] = pd.to_numeric(df["MG_Emprestimo_Disponivel"], errors="coerce")
     df["MG_Emprestimo_Total"] = pd.to_numeric(df["MG_Emprestimo_Total"], errors="coerce")
 
-    # Grupos:
+    cpfs_classificados = set()
+    grupos = {}
+
+    # negativos: MG_Emprestimo_Disponivel < 0
     negativos = df[df["MG_Emprestimo_Disponivel"] < 0]
+    grupos["negativos"] = negativos[~negativos["CPF"].isin(cpfs_classificados)]
+    cpfs_classificados.update(grupos["negativos"]["CPF"].astype(str).tolist())
 
-    menor50 = df[
+    # menor50: MG_Emprestimo_Disponivel < 50 (e não classificados)
+    menores_50 = df[
         (df["MG_Emprestimo_Disponivel"] < 50) &
-        (df["MG_Emprestimo_Disponivel"] >= 0)
+        ~df["CPF"].isin(cpfs_classificados)
     ]
+    grupos["menor50"] = menores_50
+    cpfs_classificados.update(menores_50["CPF"].astype(str).tolist())
 
-    supertomador = df[
-        (df["MG_Emprestimo_Disponivel"] / df["MG_Emprestimo_Total"] < 0.30) &
-        (df["MG_Emprestimo_Disponivel"] >= 50)
-    ]
-
-    tomador = df[
-        (df["MG_Emprestimo_Disponivel"] / df["MG_Emprestimo_Total"] < 0.60) &
+    # supertomador: ratio < 0.30, MG_Emprestimo_Disponivel >= 50
+    # proteger divisão por zero / NaN: considerar apenas MG_Emprestimo_Total > 0
+    cond_super = (
+        (df["MG_Emprestimo_Total"] > 0) &
+        ((df["MG_Emprestimo_Disponivel"] / df["MG_Emprestimo_Total"]) < 0.30) &
         (df["MG_Emprestimo_Disponivel"] >= 50) &
-        ~(df["MG_Emprestimo_Disponivel"] / df["MG_Emprestimo_Total"] < 0.30)
-    ]
+        ~df["CPF"].isin(cpfs_classificados)
+    )
+    supertomador = df[cond_super]
+    grupos["supertomador"] = supertomador
+    cpfs_classificados.update(supertomador["CPF"].astype(str).tolist())
 
-    usados = pd.concat([negativos, menor50, supertomador, tomador])["CPF"].unique()
-    resto = df[~df["CPF"].isin(usados)]
+    # tomador: ratio < 0.60, MG_Emprestimo_Disponivel >= 50, e não supertomador
+    cond_tomador = (
+        (df["MG_Emprestimo_Total"] > 0) &
+        ((df["MG_Emprestimo_Disponivel"] / df["MG_Emprestimo_Total"]) < 0.60) &
+        (df["MG_Emprestimo_Disponivel"] >= 50) &
+        ~df["CPF"].isin(cpfs_classificados)
+    )
+    tomador = df[cond_tomador]
+    grupos["tomador"] = tomador
+    cpfs_classificados.update(tomador["CPF"].astype(str).tolist())
 
-    grupos = {
-        "negativos": negativos,
-        "menor50": menor50,
-        "supertomador": supertomador,
-        "tomador": tomador,
-        "resto": resto
-    }
+    # resto: tudo que não foi classificado
+    resto = df[~df["CPF"].isin(cpfs_classificados)]
+    grupos["resto"] = resto
 
     return grupos
 
 
-# -------------------------------------
-# Interface Streamlit
-# -------------------------------------
-st.title("📂 Processador CSV — Grupos + Arquivos de 50k")
+# -------------------------
+# Ajustar colunas de saída conforme tipo escolhido
+# -------------------------
+def ajustar_colunas_para_saida(df, tipo_saida):
+    if tipo_saida == "Apenas CPF":
+        if "CPF" not in df.columns:
+            return pd.DataFrame(columns=["CPF"])
+        return df[["CPF"]].drop_duplicates().reset_index(drop=True)
+    elif tipo_saida == "CPF e Matrícula":
+        cols = [c for c in ["CPF", "Matricula"] if c in df.columns]
+        if not cols:
+            return pd.DataFrame(columns=["CPF", "Matricula"])
+        return df[cols].drop_duplicates().reset_index(drop=True)
+    else:  # Todas as colunas
+        return df.drop_duplicates().reset_index(drop=True)
 
-arquivos = st.file_uploader("Selecione os arquivos CSV", type=["csv", "txt"], accept_multiple_files=True)
 
-lot = st.text_input("Lotações desejadas (separadas por vírgula): ", placeholder="RH, FINANCEIRO, DIRETORIA")
+# -------------------------
+# Dividir DataFrame em partes de limite linhas
+# -------------------------
+def dividir_em_partes(df, limite=50000):
+    partes = []
+    n = len(df)
+    if n == 0:
+        return partes
+    num_partes = (n // limite) + (1 if n % limite else 0)
+    for i in range(num_partes):
+        ini = i * limite
+        fim = ini + limite
+        partes.append(df.iloc[ini:fim].reset_index(drop=True))
+    return partes
 
-if arquivos and lot.strip():
 
-    lotacoes = [x.strip() for x in lot.split(",")]
+# -------------------------
+# Helper: converte DataFrame para bytes CSV para download
+# -------------------------
+def df_to_csv_bytes(df, sep=","):
+    buf = BytesIO()
+    df.to_csv(buf, index=False, sep=sep)
+    buf.seek(0)
+    return buf.read()
 
-    st.info(f"Filtrando pelas lotações: {lotacoes}")
 
-    df = carregar_e_filtrar(arquivos, lotacoes)
+# -------------------------
+# Streamlit UI
+# -------------------------
+st.title("Orquestrador CSV — Filtrar por Lotação e gerar grupos")
 
-    st.subheader("Prévia dos dados filtrados:")
-    st.dataframe(df)
+st.markdown(
+    """
+    - Faça upload de um ou mais CSVs.
+    - Informe a(s) Lotação(ões) que deseja incluir (separadas por vírgula).
+    - Escolha o formato de saída (Apenas CPF / CPF e Matrícula / Todas as colunas).
+    - O app irá gerar 5 grupos (negativos, menor50, supertomador, tomador, resto).
+    - Cada grupo será dividido em partes de até 50.000 registros se necessário.
+    """
+)
 
-    if not df.empty:
+uploaded = st.file_uploader("Arraste ou selecione os arquivos CSV", accept_multiple_files=True, type=["csv", "txt"])
+lot_input = st.text_input("Lotações desejadas (separadas por vírgula)", placeholder="EX: FINANCEIRO, RH, DIRETORIA")
+tipo_saida = st.selectbox("Tipo de arquivo de saída:", ["Apenas CPF", "CPF e Matrícula", "Todas as colunas"])
+botao_processar = st.button("Processar e Gerar Arquivos")
 
-        grupos = gerar_grupos(df)
+if botao_processar:
+    if not uploaded:
+        st.error("Envie ao menos um arquivo CSV.")
+    elif not lot_input.strip():
+        st.error("Informe ao menos uma Lotação.")
+    else:
+        lotacoes = [x.strip() for x in lot_input.split(",") if x.strip()]
+        with st.spinner("Carregando e filtrando arquivos..."):
+            base = carregar_e_filtrar(uploaded, lotacoes)
 
-        st.success("Grupos gerados! Agora você pode baixar:")
+        if base.empty:
+            st.error("Nenhum registro após filtrar pelas lotações informadas.")
+        else:
+            # tenta pegar um nome de convênio para usar nos nomes dos arquivos (opcional)
+            convenio = "CONVENIO"
+            if "Convenio" in base.columns and not base["Convenio"].isna().all():
+                try:
+                    convenio = str(base["Convenio"].dropna().iloc[0])
+                except Exception:
+                    convenio = "CONVENIO"
 
-        for nome, grupo in grupos.items():
-            st.write(f"### Grupo: {nome} ({len(grupo)} registros)")
+            st.success(f"Registros após filtro: {len(base):,} — processando grupos...")
+            grupos = criar_grupos_sem_sobreposicao(base)
 
-            partes = dividir_em_partes(grupo)
-
-            if not partes:
-                st.write("Nenhum registro neste grupo.")
-                continue
-
-            for i, parte in enumerate(partes, start=1):
-                arquivo_nome = f"{nome}.csv" if len(partes) == 1 else f"{nome}_parte{i}.csv"
-                csv = parte.to_csv(index=False, sep=";").encode("utf-8")
-
-                st.download_button(
-                    label=f"⬇️ Baixar {arquivo_nome}",
-                    data=csv,
-                    file_name=arquivo_nome,
-                    mime="text/csv"
-                )
+            #
