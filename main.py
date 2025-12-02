@@ -44,6 +44,7 @@ def carregar_e_filtrar(arquivos, lotacoes_selecionadas):
     lista = []
 
     for arquivo in arquivos:
+        nome = arquivo.name
 
         # Detectar encoding
         encoding = detectar_encoding_sem_chardet(arquivo)
@@ -57,26 +58,26 @@ def carregar_e_filtrar(arquivos, lotacoes_selecionadas):
                 arquivo,
                 sep=separador,
                 encoding=encoding,
-                engine="python",
-                low_memory=False
+                engine="python"   # remove low_memory
             )
         except Exception as e:
-            st.error(f"Erro ao ler {arquivo.name}: {e}")
+            st.error(f"Erro ao ler {nome}: {e}")
             continue
 
-        # Filtra apenas as lotações desejadas
-        if "Lotacao" in df.columns:
-            df = df[df["Lotacao"].isin(lotacoes_selecionadas)]
-        else:
-            st.error(f"O arquivo {arquivo.name} não contém a coluna 'Lotacao'.")
+        # Validar coluna Lotacao
+        if "Lotacao" not in df.columns:
+            st.error(f"O arquivo {nome} não possui a coluna 'Lotacao'.")
             continue
+
+        # Filtrar lotações desejadas
+        df = df[df["Lotacao"].isin(lotacoes_selecionadas)]
 
         lista.append(df)
 
     if not lista:
         return pd.DataFrame()
 
-    # junta tudo já filtrado
+    # Juntar tudo já filtrado
     return pd.concat(lista, ignore_index=True)
 
 
@@ -108,7 +109,6 @@ arquivos = st.file_uploader(
     accept_multiple_files=True
 )
 
-# Usuário define quais lotações quer filtrar
 lotacoes_input = st.text_input(
     "Informe as Lotações desejadas, separadas por vírgula:",
     placeholder="Ex: FINANCEIRO, RH, DIRETORIA"
