@@ -1,30 +1,24 @@
 import streamlit as st
 import pandas as pd
-import chardet
-
-st.set_page_config(page_title="Leitor Inteligente de CSV", layout="wide")
 
 
-# -----------------------------------------------
-# Função: Detectar encoding automaticamente
-# -----------------------------------------------
-def detectar_encoding(arquivo):
-    conteudo = arquivo.read()
-    arquivo.seek(0)
-
-    detect = chardet.detect(conteudo)
-    encoding = detect["encoding"] or "utf-8"
-
-    # Normalizar para Latin-1 caso detectado
-    if encoding.lower() in ["iso-8859-1", "latin-1", "latin1", "cp1252"]:
-        return "latin-1"
-
-    return "utf-8"
+# -------------------------------------------------------------------
+# Detectar encoding sem chardet
+# -------------------------------------------------------------------
+def detectar_encoding_sem_chardet(arquivo):
+    for enc in ["utf-8", "latin-1", "iso-8859-1"]:
+        try:
+            arquivo.seek(0)
+            arquivo.read().decode(enc)
+            return enc
+        except:
+            pass
+    return "latin-1"
 
 
-# -----------------------------------------------
-# Função: Detectar delimitador automaticamente
-# -----------------------------------------------
+# -------------------------------------------------------------------
+# Detectar separador automático
+# -------------------------------------------------------------------
 def detectar_separador(arquivo, encoding):
     arquivo.seek(0)
     try:
@@ -35,25 +29,24 @@ def detectar_separador(arquivo, encoding):
     arquivo.seek(0)
 
     amostra = "\n".join(linhas)
-
     delimitadores = [",", ";", "|", "\t"]
-    contagem = {d: amostra.count(d) for d in delimitadores}
 
-    # retorna o delimitador mais frequente
+    contagem = {d: amostra.count(d) for d in delimitadores}
     return max(contagem, key=contagem.get)
 
 
-# -----------------------------------------------
-# Função: Carregar 1 ou mais arquivos CSV
-# -----------------------------------------------
+# -------------------------------------------------------------------
+# Carregar E filtrar antes de juntar
+# -------------------------------------------------------------------
 @st.cache_data
-def carregar_arquivos(arquivos):
+def carregar_e_filtrar(arquivos, lotacoes_selecionadas):
+
     lista = []
 
     for arquivo in arquivos:
 
         # Detectar encoding
-        encoding = detectar_encoding(arquivo)
+        encoding = detectar_encoding_sem_chardet(arquivo)
 
         # Detectar separador
         separador = detectar_separador(arquivo, encoding)
@@ -67,38 +60,81 @@ def carregar_arquivos(arquivos):
                 engine="python",
                 low_memory=False
             )
-
-            st.success(f"✔ {arquivo.name} carregado | sep='{separador}' | enc='{encoding}'")
-            lista.append(df)
-
         except Exception as e:
             st.error(f"Erro ao ler {arquivo.name}: {e}")
             continue
 
-    if len(lista) == 0:
+        # Filtra apenas as lotações desejadas
+        if "Lotacao" in df.columns:
+            df = df[df["Lotacao"].isin(lotacoes_selecionadas)]
+        else:
+            st.error(f"O arquivo {arquivo.name} não contém a coluna 'Lotacao'.")
+            continue
+
+        lista.append(df)
+
+    if not lista:
         return pd.DataFrame()
 
+    # junta tudo já filtrado
     return pd.concat(lista, ignore_index=True)
 
 
-# -----------------------------------------------
-# UI do app
-# -----------------------------------------------
-st.title("📂 Leitor Inteligente de Arquivos CSV")
+# -------------------------------------------------------------------
+# Dividir em arquivos de 50.000 linhas
+# -------------------------------------------------------------------
+def gerar_arquivos_50k(df):
+    arquivos = []
+    total = len(df)
+    partes = total // 50000 + (1 if total % 50000 else 0)
 
-st.write("Este app detecta automaticamente **separador** e **encoding (UTF-8 ou Latin-1)**.")
+    for i in range(partes):
+        chunk = df.iloc[i * 50000:(i + 1) * 50000]
+        nome = f"saida_parte_{i+1}.csv"
+        chunk.to_csv(nome, index=False, sep=";")
+        arquivos.append(nome)
+
+    return arquivos
+
+
+# -------------------------------------------------------------------
+# Interface Streamlit
+# -------------------------------------------------------------------
+st.title("📂 Filtrador + Unificador de CSV com Lotações")
 
 arquivos = st.file_uploader(
-    "Selecione um ou mais arquivos CSV",
+    "Selecione arquivos CSV",
     type=["csv", "txt"],
     accept_multiple_files=True
 )
 
-if arquivos:
-    df_final = carregar_arquivos(arquivos)
+# Usuário define quais lotações quer filtrar
+lotacoes_input = st.text_input(
+    "Informe as Lotações desejadas, separadas por vírgula:",
+    placeholder="Ex: FINANCEIRO, RH, DIRETORIA"
+)
 
-    st.subheader("📊 Dados Carregados")
+if arquivos and lotacoes_input.strip():
 
+    lotacoes_selecionadas = [x.strip() for x in lotacoes_input.split(",")]
+
+    st.info(f"Filtrando pelas Lotações: {lotacoes_selecionadas}")
+
+    df_final = carregar_e_filtrar(arquivos, lotacoes_selecionadas)
+
+    st.subheader("📊 Dados filtrados")
     st.dataframe(df_final)
 
-    st.write(f"**Total de linhas:** {len(df_final):,}")
+    if not df_final.empty:
+        arquivos_gerados = gerar_arquivos_50k(df_final)
+
+        st.success(f"{len(arquivos_gerados)} arquivos gerados com sucesso!")
+
+        for arq in arquivos_gerados:
+            with open(arq, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar " + arq,
+                    data=f,
+                    file_name=arq,
+                    mime="text/csv"
+                )
