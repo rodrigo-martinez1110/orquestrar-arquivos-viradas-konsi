@@ -66,10 +66,19 @@ def carregar_e_filtrar(arquivos, lotacoes):
             before = len(df)
 
             df["lotacao"] = df["lotacao"].astype(str).str.strip()
-            df = df[df["lotacao"].isin(lotacoes)]
+
+            # 🔹 FILTRA APENAS SE LOTACOES FOI INFORMADO
+            if lotacoes:
+                df = df[df["lotacao"].isin(lotacoes)]
+
             after = len(df)
 
-            diagn.append({"file": nome, "status": "ok", "rows_before": before, "rows_after": after})
+            diagn.append({
+                "file": nome,
+                "status": "ok",
+                "rows_before": before,
+                "rows_after": after
+            })
 
             if after > 0:
                 dfs.append(df)
@@ -94,8 +103,12 @@ def criar_grupos(df):
 
     df = df.copy()
 
-    df["mg_emprestimo_disponivel"] = pd.to_numeric(df["mg_emprestimo_disponivel"], errors="coerce")
-    df["mg_emprestimo_total"] = pd.to_numeric(df["mg_emprestimo_total"], errors="coerce")
+    df["mg_emprestimo_disponivel"] = pd.to_numeric(
+        df["mg_emprestimo_disponivel"], errors="coerce"
+    )
+    df["mg_emprestimo_total"] = pd.to_numeric(
+        df["mg_emprestimo_total"], errors="coerce"
+    )
     df["cpf"] = df["cpf"].astype(str).str.strip()
 
     usados = set()
@@ -108,25 +121,31 @@ def criar_grupos(df):
     grupos["negativos"] = g
 
     # menor50
-    g = df[(df["mg_emprestimo_disponivel"] < 50) &
-           (df["mg_emprestimo_disponivel"] >= 0) &
-           (~df["cpf"].isin(usados))].copy()
+    g = df[
+        (df["mg_emprestimo_disponivel"] < 50) &
+        (df["mg_emprestimo_disponivel"] >= 0) &
+        (~df["cpf"].isin(usados))
+    ].copy()
     usados.update(g["cpf"])
     grupos["menor50"] = g
 
     # supertomador
-    g = df[(df["mg_emprestimo_total"] > 0) &
-           ((df["mg_emprestimo_disponivel"] / df["mg_emprestimo_total"]) < 0.30) &
-           (df["mg_emprestimo_disponivel"] >= 50) &
-           (~df["cpf"].isin(usados))].copy()
+    g = df[
+        (df["mg_emprestimo_total"] > 0) &
+        ((df["mg_emprestimo_disponivel"] / df["mg_emprestimo_total"]) < 0.30) &
+        (df["mg_emprestimo_disponivel"] >= 50) &
+        (~df["cpf"].isin(usados))
+    ].copy()
     usados.update(g["cpf"])
     grupos["supertomador"] = g
 
     # tomador
-    g = df[(df["mg_emprestimo_total"] > 0) &
-           ((df["mg_emprestimo_disponivel"] / df["mg_emprestimo_total"]) < 0.60) &
-           (df["mg_emprestimo_disponivel"] >= 50) &
-           (~df["cpf"].isin(usados))].copy()
+    g = df[
+        (df["mg_emprestimo_total"] > 0) &
+        ((df["mg_emprestimo_disponivel"] / df["mg_emprestimo_total"]) < 0.60) &
+        (df["mg_emprestimo_disponivel"] >= 50) &
+        (~df["cpf"].isin(usados))
+    ].copy()
     usados.update(g["cpf"])
     grupos["tomador"] = g
 
@@ -144,11 +163,9 @@ def ajustar_colunas(df, tipo):
     df = df.copy()
 
     if tipo == "Apenas CPF":
-        out = df[["cpf"]].drop_duplicates().reset_index(drop=True)
-        return out
+        return df[["cpf"]].drop_duplicates().reset_index(drop=True)
 
     elif tipo == "CPF e Matrícula":
-        # garantir colunas mesmo que não existam
         colunas_final = ["cpf", "senha", "matricula", "nome"]
         for c in colunas_final:
             if c not in df.columns:
@@ -167,9 +184,12 @@ def split_df(df, limit=50000):
     n = len(df)
     if n == 0:
         return parts
+
     k = (n // limit) + (1 if n % limit else 0)
     for i in range(k):
-        parts.append(df.iloc[i * limit:(i + 1) * limit].reset_index(drop=True))
+        parts.append(
+            df.iloc[i * limit:(i + 1) * limit].reset_index(drop=True)
+        )
     return parts
 
 
@@ -185,13 +205,24 @@ def df_to_bytes(df):
 # =========================================================
 st.title("Orquestrador CSV – Versão Melhorada")
 
-uploaded = st.file_uploader("Envie um ou mais CSV", accept_multiple_files=True)
-lot = st.text_input("Lotações (separadas por vírgula)")
-tipo = st.selectbox("Tipo de saída:", ["Apenas CPF", "CPF e Matrícula", "Todas as colunas"])
+uploaded = st.file_uploader(
+    "Envie um ou mais CSV",
+    accept_multiple_files=True
+)
 
-if uploaded and lot.strip():
+lot = st.text_input(
+    "Lotações (separadas por vírgula) — opcional"
+)
 
-    lotacoes = [x.strip() for x in lot.split(",") if x.strip()]
+tipo = st.selectbox(
+    "Tipo de saída:",
+    ["Apenas CPF", "CPF e Matrícula", "Todas as colunas"]
+)
+
+if uploaded:
+
+    # 🔹 se vazio, vira lista vazia e não filtra
+    lotacoes = [x.strip() for x in lot.split(",") if x.strip()] if lot.strip() else []
 
     base, diag = carregar_e_filtrar(uploaded, lotacoes)
 
@@ -218,7 +249,6 @@ if uploaded and lot.strip():
     st.write("### Arquivos para download:")
 
     for nome, g in grupos.items():
-
         out = ajustar_colunas(g, tipo)
 
         if out.empty:
@@ -239,4 +269,4 @@ if uploaded and lot.strip():
             )
 
 else:
-    st.info("Envie arquivos e informe lotações para começar.")
+    st.info("Envie arquivos para começar.")
